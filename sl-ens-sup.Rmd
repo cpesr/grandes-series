@@ -1,0 +1,233 @@
+---
+title: "CPESR"
+author: "CPESR"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+options(dplyr.summarise.inform = FALSE)
+knitr::opts_chunk$set(fig.asp = 9/16, fig.retina = 2)
+
+library(tidyverse)
+library(ggcpesrthemes)
+theme_set(theme_cpesr())
+theme_cpesr_setup(authors = "Julien Gossa", source = "https://github.com/cpesr/RFC/")
+```
+
+## Données 
+
+### Série longue
+
+- https://www.data.gouv.fr/fr/datasets/evolution-du-nombre-de-personnels-enseignants-de-lenseignement-superieur-public/
+
+```{r load.sl}
+sl <- read.csv("data/sl-ens-sup.csv", dec='.')
+
+colnames(sl)
+```
+
+### Total
+
+```{r total}
+sl %>% 
+  select(annee, statut_ens_chercheurs, statut_pu, statut_ma_mcf, statut_assistant_hors_medecine, statut_total) %>%
+  filter(annee %in% c(min(annee),seq(1920,2030,10),max(annee))) %>%
+  kableExtra::kable()
+  
+```
+
+### DataESR
+
+```{r load.ens}
+ens <- bind_rows(
+  read.csv2("dataESR/fr-esr-enseignants-titulaires-esr-public.csv", dec='.'),
+  read.csv2("dataESR/fr-esr-enseignants-nonpermanents-esr-public.csv", dec='.') %>% mutate(Code.categorie.personnels = code_categorie_persg, Code.groupe.CNU = as.character(Code.groupe.CNU))
+) 
+  
+
+colnames(ens)
+```
+
+Statuts des données ouvertes : 
+
+```{r ens.cat}
+unique(ens$Code.categorie.personnels)
+```
+
+## Reformatages 
+
+```{r reformat}
+
+sl.long <- sl %>% 
+  filter(source != "non disponible") %>%
+  rowwise() %>%
+  transmute(
+   Rentrée = annee,
+   PR = min(statut_pu, statut_pu_sl, na.rm = TRUE),
+   MCF = min(statut_ma_mcf, statut_mcf_sl, na.rm = TRUE) - replace_na(statut_assistant_hors_medecine,0),
+   AM2D = statut_2d_sup,
+   LRU = statut_contractuels_lru,
+   `CONT 2D` = statut_contractuels_2d,
+   `LECTEUR, REP, MAITRE LANGUE` = statut_lecteurs,
+   ATER = statut_ater,
+   `DOCT AVEC ENS` = statut_moniteur_doctorant_contractuel,
+   
+   ASSISTANTS = statut_assistant_hors_medecine,
+   
+   ASSOCIES = max(statut_ens_associes_inclus_mcf_pu,statut_ens_associes, na.rm=TRUE),
+   #`PR ASS-INV` = statut_pu - statut_pu_sl,
+   #`MCF ASS-INV` = statut_ma_mcf - statut_mcf_sl,
+   
+   #`ASS INV (corps NR)` = 0, #statut_autres,
+   
+   AUTRES = statut_autres
+  ) %>%
+  pivot_longer(-Rentrée, names_to = "Catégorie", values_to = "Effectif.sl") %>%
+  filter(is.finite(Effectif.sl))
+
+
+ens.sl <- full_join(
+ens %>% 
+  mutate(Catégorie = recode(Code.categorie.personnels,
+                            "LECTEUR ET REP" = "LECTEUR, REP, MAITRE LANGUE",
+                            "MAITRE LANGUE" = "LECTEUR, REP, MAITRE LANGUE",
+                            "PR ASS-INV" = "ASSOCIES",
+                            "MCF ASS-INV" = "ASSOCIES",
+                            "ASS INV (corps NR)" = "ASSOCIES",
+                            "DOCT SANS ENS" = "AUTRES"
+                            )) %>%
+  group_by(Rentrée, Catégorie) %>%  
+  summarize(Effectif.DataESR = sum(effectif)),
+sl.long
+) %>%
+  mutate(
+    Type = ifelse(Catégorie %in% c("PR","MCF","AM2D"), "Titulaires", "Non titulaires"),
+    diff = Effectif.DataESR - Effectif.sl,
+    ratio = Effectif.sl / Effectif.DataESR )
+```
+
+
+## Vérification
+
+### Total
+
+Attention : 2010 et 2011 ne comparent que les permanents.
+
+```{r check, results='asis'}
+ens.sl %>% 
+  filter(!is.na(ratio)) %>%
+  group_by(Rentrée, Type) %>%
+  summarise(across(starts_with("Effectif"), sum)) %>%
+  mutate(
+    diff = Effectif.DataESR - Effectif.sl,
+    ratio = (Effectif.sl / Effectif.DataESR) - 1 ) %>%
+  ggplot(aes(x=Rentrée,y=ratio, color = Type)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+    scale_y_continuous(labels = scales::percent)
+  
+```
+
+### Détail
+
+```{r check.details, results='asis'}
+ens.sl %>% 
+  filter(!is.na(ratio)) %>%
+  group_by(Rentrée, Catégorie) %>%
+  summarise(across(starts_with("Effectif"), sum)) %>%
+  mutate(
+    diff = Effectif.DataESR - Effectif.sl,
+    ratio = (Effectif.sl / Effectif.DataESR) - 1 ) %>%
+  ggplot(aes(x=Rentrée,y=diff, color = Catégorie)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+  theme(legend.position = "right")
+  
+```
+
+```{r check.detail.num, results='asis'}
+ens.sl %>% 
+  filter(!is.na(ratio)) %>%
+  spoiler_table(trim=Inf)
+```
+
+```{r check.detail.points, results='asis'}
+ens.sl %>% 
+  rowwise() %>%
+  filter(Type == "Non titulaires") %>%
+  filter(!is.na(ratio)) %>%
+  mutate(ratio = max(min(ratio,1.1),0.9)) %>%
+  ggplot(aes(x=Rentrée,y=Catégorie, color=ratio)) + geom_point(size = 10) +
+  scale_x_continuous(breaks = seq(2000,2030)) +
+  scale_color_distiller(palette = "RdBu", limits = c(0.9,1.10))
+
+```
+
+
+### DOCT AVEC ENS
+
+```{r check.doctavecens, results='asis'}
+ens.sl %>% 
+  filter(Catégorie == "DOCT AVEC ENS") %>%
+  filter(Rentrée > 2005) %>%
+  pivot_longer(starts_with("Effectif"), names_to = "Source", values_to = "Valeur") %>%
+  ggplot(aes(x=Rentrée,y=Valeur, color = Source)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+  theme(legend.position = "right")
+
+```
+
+### ASSOCIES
+
+```{r check.ass, results='asis'}
+ens.sl %>% 
+  filter(Catégorie == "ASSOCIES") %>%
+  filter(Rentrée > 2005) %>%
+  pivot_longer(starts_with("Effectif"), names_to = "Source", values_to = "Valeur") %>%
+  ggplot(aes(x=Rentrée,y=Valeur, color = Source)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+  theme(legend.position = "right")
+
+```
+
+
+### AUTRES
+
+```{r check.autres, results='asis'}
+ens.sl %>% 
+  filter(Catégorie == "AUTRES") %>%
+  filter(Rentrée > 2005) %>%
+  pivot_longer(starts_with("Effectif"), names_to = "Source", values_to = "Valeur") %>%
+  ggplot(aes(x=Rentrée,y=Valeur, color = Source)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+  theme(legend.position = "right")
+```
+
+## Non titulaires (somme)
+
+
+```{r check.nt, results='asis'}
+ens.sl %>%
+  filter(Type == "Non titulaires") %>%
+  group_by(Rentrée) %>%
+  summarise(across(starts_with("Effectif"), sum)) %>%
+  pivot_longer(starts_with("Effectif"), names_to = "Source", values_to = "Valeur") %>%
+  bind_rows(
+    sl %>%
+      transmute(Rentrée = annee, Source = "sl tot", Valeur = statut_total_non_titulaires)
+  ) %>%
+filter(Rentrée > 2005) %>%
+  arrange(Rentrée,Source) %>%
+  ggplot(aes(x=Rentrée,y=Valeur, color = Source)) + 
+    geom_line() + geom_point() +
+    scale_x_continuous(breaks = seq(1980,2030)) +
+  theme(legend.position = "right")
+  
+
+```
+

@@ -1,0 +1,39 @@
+---
+title: "CPESR"
+author: "CPESR"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(dplyr.summarise.inform = FALSE)
+knitr::opts_chunk$set(fig.asp = 9/16, fig.retina = 2)
+
+library(tidyverse)
+library(ggcpesrthemes)
+theme_set(theme_cpesr())
+theme_cpesr_setup(authors = "Julien Gossa", source = "https://github.com/cpesr/RFC/")
+```
+
+## Données 
+
+- url source
+
+```{r load}
+etu <- read.csv("data/kh-sl_eleves_sup.csv", dec='.')
+
+colnames(df)
+```
+
+## Explorations
+
+### Total
+
+```{r total}
+etu %>% 
+  select(annee, disc_total) %>%
+  filter(annee %in% c(min(annee),seq(1940,2030,10),max(annee))) %>%
+  kableExtra::kable()
+  
+```
